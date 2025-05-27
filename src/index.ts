@@ -5,6 +5,7 @@ import { getUniswapV3Price } from './dexClients/uniswapV3';
 import { getSushiSwapPrice } from './dexClients/sushiswap';
 import { getShibaSwapPrice } from './dexClients/shibaswap';
 import { getSakeSwapPrice } from './dexClients/sakeswap';
+import { getBalancerPrice } from './dexClients/balancer';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -48,6 +49,13 @@ async function main() {
     console.log('SakeSwap WETH/DAI price:', sakePrice);
   } catch (err) {
     console.error('Failed to fetch SakeSwap price:', err);
+  }
+
+  try {
+    const balancerPrice = await getBalancerPrice(provider);
+    console.log('Balancer WETH/DAI price:', balancerPrice);
+  } catch (err) {
+    console.error('Failed to fetch Balancer price:', err);
   }
 }
 
