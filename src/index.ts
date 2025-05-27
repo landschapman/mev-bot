@@ -2,6 +2,7 @@ import 'dotenv/config';
 import { ethers } from 'ethers';
 import { getUniswapV2Price } from './dexClients/uniswapV2';
 import { getUniswapV3Price } from './dexClients/uniswapV3';
+import { getSushiSwapPrice } from './dexClients/sushiswap';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -24,6 +25,13 @@ async function main() {
     console.log('Uniswap V3 WETH/DAI price:', v3Price);
   } catch (err) {
     console.error('Failed to fetch Uniswap V3 price:', err);
+  }
+
+  try {
+    const sushiPrice = await getSushiSwapPrice(provider);
+    console.log('SushiSwap WETH/DAI price:', sushiPrice);
+  } catch (err) {
+    console.error('Failed to fetch SushiSwap price:', err);
   }
 }
 
