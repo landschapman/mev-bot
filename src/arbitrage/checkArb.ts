@@ -15,7 +15,7 @@ interface ArbitrageOpportunity {
 
 /**
  * Checks for arbitrage opportunities between DEX price sources.
- * Reports all opportunities where sellPrice > buyPrice (profit > 0).
+ * Reports the top 3 most profitable opportunities where sellPrice > buyPrice.
  * @param sources Array of { name, price } objects
  */
 export function checkArb(
@@ -54,19 +54,23 @@ export function checkArb(
     }
   }
 
-  // Sort opportunities by profit percentage (highest first)
+  // Sort opportunities by profit percentage (highest first) and take top 3
   opportunities.sort((a, b) => b.profitPct - a.profitPct);
+  const topOpportunities = opportunities.slice(0, 3);
 
-  if (opportunities.length > 0) {
-    console.log(chalk.blue('\n=== Arbitrage Opportunities ==='));
-    opportunities.forEach(opp => {
+  if (topOpportunities.length > 0) {
+    console.log(chalk.blue('\n=== Top 3 Arbitrage Opportunities ==='));
+    topOpportunities.forEach((opp, index) => {
       console.log(
         chalk.green(
-          `💰 Buy from ${opp.buyDex} at ${opp.buyPrice.toFixed(2)}, sell to ${opp.sellDex} at ${opp.sellPrice.toFixed(2)} (profit ~${opp.profitPct.toFixed(2)}%)`
+          `${index + 1}. Buy from ${opp.buyDex} at ${opp.buyPrice.toFixed(2)}, sell to ${opp.sellDex} at ${opp.sellPrice.toFixed(2)} (profit ~${opp.profitPct.toFixed(2)}%)`
         )
       );
     });
-    console.log(chalk.blue(`=== Found ${opportunities.length} opportunities ===\n`));
+    if (opportunities.length > 3) {
+      console.log(chalk.gray(`\n(${opportunities.length - 3} other opportunities not shown)`));
+    }
+    console.log(chalk.blue('=====================================\n'));
   } else {
     console.log(chalk.yellow('No arbitrage opportunities found.'));
   }
