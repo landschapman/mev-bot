@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json';
+import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json' with { type: "json" };
 
 const SAKESWAP_FACTORY = '0x75e48C954594d64ef9613AeEF97Ad85370F13807';
 const WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';

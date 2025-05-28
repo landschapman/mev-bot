@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import { ethers } from 'ethers';
-import { getUniswapV2Price } from './dexClients/uniswapV2';
-import { getUniswapV3Price } from './dexClients/uniswapV3';
-import { getSushiSwapPrice } from './dexClients/sushiswap';
-import { getShibaSwapPrice } from './dexClients/shibaswap';
-import { getSakeSwapPrice } from './dexClients/sakeswap';
-import { getBalancerPrice } from './dexClients/balancer';
-import { checkArb, PriceSource } from './arbitrage/checkArb';
+import { getUniswapV2Price } from './dexClients/uniswapV2.js';
+import { getUniswapV3Price } from './dexClients/uniswapV3.js';
+import { getSushiSwapPrice } from './dexClients/sushiswap.js';
+import { getShibaSwapPrice } from './dexClients/shibaswap.js';
+import { getSakeSwapPrice } from './dexClients/sakeswap.js';
+import { getBalancerPrice } from './dexClients/balancer.js';
+import { getKyberPrice } from './dexClients/kyber.mjs';
+import { checkArb, PriceSource } from './arbitrage/checkArb.js';
 import chalk from 'chalk';
 
 async function main() {
@@ -25,6 +26,7 @@ async function main() {
   let shibaPrice: number | null = null;
   let sakePrice: number | null = null;
   let balancerPrice: number | null = null;
+  let kyberPrice: number | null = null;
 
   try {
     v2Price = await getUniswapV2Price(provider);
@@ -68,6 +70,13 @@ async function main() {
     console.error('Failed to fetch Balancer price:', err);
   }
 
+  try {
+    kyberPrice = await getKyberPrice(provider);
+    console.log('Kyber WETH/DAI price:', kyberPrice);
+  } catch (err) {
+    console.error('Failed to fetch Kyber price:', err);
+  }
+
   // Build price sources array
   const priceSources: PriceSource[] = [
     { name: 'Uniswap V2', price: v2Price },
@@ -76,15 +85,16 @@ async function main() {
     { name: 'ShibaSwap', price: shibaPrice },
     { name: 'SakeSwap', price: sakePrice },
     { name: 'Balancer', price: balancerPrice },
+    { name: 'Kyber', price: kyberPrice },
   ];
 
   // CLI flag for threshold
   const thresholdArg = process.argv.find(arg => arg.startsWith('--arb-threshold='));
-  let threshold = 0.3;
+  let threshold = 0;
   if (thresholdArg) {
     const val = parseFloat(thresholdArg.split('=')[1]);
     if (!isNaN(val)) threshold = val;
-    else console.log(chalk.yellow('Invalid --arb-threshold value, using default 0.3%'));
+    else console.log(chalk.yellow('Invalid --arb-threshold value, using default 0%'));
   }
 
   // Run arbitrage check

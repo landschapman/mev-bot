@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json';
+import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json' with { type: "json" };
 
 // ShibaSwap factory address (mainnet): 0x115934131916C8b277DD010Ee02de363c09d037c
 const SHIBASWAP_FACTORY = '0x115934131916C8b277DD010Ee02de363c09d037c';

@@ -1,5 +1,5 @@
 import { ethers } from 'ethers';
-import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json';
+import IUniswapV2PairABI from '../abi/IUniswapV2Pair.json' with { type: "json" };
 
 // Known LuaSwap WETH/DAI pair address (if available, update if needed)
 const LUASWAP_WETH_DAI_PAIR = '0xD1C3f94DE7e5B6B3B2e6eB1eA2e2e2e2e2e2e2e2'; // <-- Replace with actual if known

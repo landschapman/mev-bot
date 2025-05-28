@@ -1,6 +1,6 @@
 import { ethers } from 'ethers';
-import BalancerVaultABI from '../abi/BalancerVault.json';
-import BalancerWeightedPoolABI from '../abi/BalancerWeightedPool.json';
+import BalancerVaultABI from '../abi/BalancerVault.json' with { type: "json" };
+import BalancerWeightedPoolABI from '../abi/BalancerWeightedPool.json' with { type: "json" };
 
 const BALANCER_VAULT = '0xBA12222222228d8Ba445958a75a0704d566BF2C8';
 const WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
