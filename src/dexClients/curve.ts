@@ -24,22 +24,54 @@ const CHAINLINK_ABI = [
   }
 ];
 
-export async function getCurvePrice(provider: ethers.providers.Provider): Promise<number | null> {
+function sleep(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function verifyReserves(chainlinkOracle: ethers.Contract, debug: boolean) {
   try {
-    // Get ETH/USD price from Chainlink
-    const chainlinkOracle = new ethers.Contract(CHAINLINK_ETH_USD, CHAINLINK_ABI, provider);
     const [, answer] = await chainlinkOracle.latestRoundData();
-    const ethPrice = parseFloat(ethers.utils.formatUnits(answer, 8)); // Chainlink uses 8 decimals
-
-    if (!ethPrice || ethPrice <= 0) {
-      console.error('Invalid ETH price from Chainlink');
-      return null;
+    if (debug) {
+      console.log('[Curve] Chainlink ETH/USD answer:', answer.toString());
     }
-
-    return ethPrice; // Return the ETH/USD price as DAI (since DAI is pegged to USD)
-
+    if (!answer || answer.lte(0)) {
+      throw new Error('Invalid ETH price from Chainlink');
+    }
+    return answer;
   } catch (err) {
-    console.error('Failed to fetch Curve/Chainlink price:', err);
-    return null;
+    if (debug) console.error('[Curve] verifyReserves error:', err);
+    throw err;
   }
+}
+
+async function checkAbi(chainlinkOracle: ethers.Contract, debug: boolean) {
+  const requiredMethods = ['latestRoundData'];
+  const fragments = chainlinkOracle.interface.fragments.map(f => f.name);
+  for (const method of requiredMethods) {
+    if (!fragments.includes(method)) {
+      if (debug) console.error(`[Curve] ABI mismatch: ${method}`);
+      throw new Error(`ABI mismatch: ${method}`);
+    }
+  }
+  if (debug) console.log('[Curve] ABI matches');
+}
+
+export async function getPrice(provider: ethers.providers.Provider): Promise<number | null> {
+  const debug = process.env.DEX_DEBUG === 'true';
+  let chainlinkOracle: ethers.Contract;
+  for (let attempt = 1; attempt <= 3; ++attempt) {
+    try {
+      chainlinkOracle = new ethers.Contract(CHAINLINK_ETH_USD, CHAINLINK_ABI, provider);
+      await checkAbi(chainlinkOracle, debug);
+      const answer = await verifyReserves(chainlinkOracle, debug);
+      const ethPrice = parseFloat(ethers.utils.formatUnits(answer, 8)); // Chainlink uses 8 decimals
+      if (debug) console.log('[Curve] ETH/USD price:', ethPrice);
+      return ethPrice; // Return the ETH/USD price as DAI (since DAI is pegged to USD)
+    } catch (err: any) {
+      if (debug) console.error(`[Curve] Attempt ${attempt} failed:`, err);
+      if (err.code === 'CALL_EXCEPTION' && attempt < 3) await sleep(250);
+      else if (attempt === 3) return null;
+    }
+  }
+  return null;
 } 

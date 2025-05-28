@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import fetch from 'node-fetch';
+import { checkAbi, sleep } from './utils.js';
 
 // KyberSwap Router address on Ethereum mainnet
 const KYBER_ROUTER = '0x6131B5fae19EA4f9D964eAc0408E4408b66337b5';
@@ -26,21 +27,40 @@ const KyberRouterABI = [
 // KyberSwap Aggregator API endpoint for Ethereum mainnet
 const KYBER_API = 'https://aggregator-api.kyberswap.com/ethereum/api/v1/routes';
 
-export async function getKyberPrice(provider: ethers.providers.Provider): Promise<number | null> {
+export async function getPrice(provider: ethers.providers.Provider): Promise<number | null> {
+  const debug = process.env.DEX_DEBUG === 'true';
+  for (let attempt = 1; attempt <= 3; ++attempt) {
+    try {
+      // Try on-chain router call
+      const router = new ethers.Contract(KYBER_ROUTER, KyberRouterABI, provider);
+      await checkAbi(router, ['getAmountsOut'], debug);
+      const amountIn = ethers.utils.parseEther('1');
+      const amounts = await router.getAmountsOut(WETH_ADDRESS, DAI_ADDRESS, amountIn);
+      if (amounts && amounts.length > 1) {
+        const price = Number(ethers.utils.formatUnits(amounts[1], 18));
+        if (debug) console.log('[Kyber] On-chain price:', price);
+        return price;
+      }
+    } catch (err: any) {
+      if (debug) console.error(`[Kyber] On-chain attempt ${attempt} failed:`, err);
+      if (err.code === 'CALL_EXCEPTION' && attempt < 3) await sleep(250);
+      else if (attempt === 3) break;
+    }
+  }
+  // Fallback to API
   try {
-    // Query for 1 WETH to DAI
     const amountIn = ethers.utils.parseEther('1').toString();
     const url = `${KYBER_API}?tokenIn=${WETH_ADDRESS}&tokenOut=${DAI_ADDRESS}&amountIn=${amountIn}`;
     const res = await fetch(url);
     if (!res.ok) throw new Error(`HTTP error: ${res.status}`);
     const data = (await res.json()) as any;
-    // The best route is the first in the result
     const amountOut = data.data.routeSummary.amountOut;
     if (!amountOut) throw new Error('No amountOut in Kyber API response');
-    // Convert to DAI (18 decimals)
-    return Number(ethers.utils.formatUnits(amountOut, 18));
+    const price = Number(ethers.utils.formatUnits(amountOut, 18));
+    if (debug) console.log('[Kyber] API price:', price);
+    return price;
   } catch (err) {
-    console.error('Failed to fetch Kyber price from API:', err);
+    if (debug) console.error('[Kyber] API fallback failed:', err);
     return null;
   }
 } 
