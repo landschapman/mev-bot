@@ -7,7 +7,6 @@ import { getShibaSwapPrice } from './dexClients/shibaswap.js';
 import { getSakeSwapPrice } from './dexClients/sakeswap.js';
 import { getBalancerPrice } from './dexClients/balancer.js';
 import { getKyberPrice } from './dexClients/kyber.mjs';
-import { getCurvePrice } from './dexClients/curve.js';
 import { checkArb, PriceSource } from './arbitrage/checkArb.js';
 import chalk from 'chalk';
 
@@ -28,7 +27,6 @@ async function main() {
   let sakePrice: number | null = null;
   let balancerPrice: number | null = null;
   let kyberPrice: number | null = null;
-  let curvePrice: number | null = null;
 
   try {
     v2Price = await getUniswapV2Price(provider);
@@ -79,13 +77,6 @@ async function main() {
     console.error('Failed to fetch Kyber price:', err);
   }
 
-  try {
-    curvePrice = await getCurvePrice(provider);
-    console.log('Curve WETH/DAI price:', curvePrice);
-  } catch (err) {
-    console.error('Failed to fetch Curve price:', err);
-  }
-
   // Build price sources array
   const priceSources: PriceSource[] = [
     { name: 'Uniswap V2', price: v2Price },
@@ -95,15 +86,7 @@ async function main() {
     { name: 'SakeSwap', price: sakePrice },
     { name: 'Balancer', price: balancerPrice },
     { name: 'Kyber', price: kyberPrice },
-    { name: 'Curve', price: curvePrice },
   ];
-
-  // Print summary table of all DEX prices
-  console.log('\n=== DEX Prices (WETH/DAI) ===');
-  for (const { name, price } of priceSources) {
-    console.log(`${name}: ${price}`);
-  }
-  console.log('==============================\n');
 
   // CLI flag for threshold
   const thresholdArg = process.argv.find(arg => arg.startsWith('--arb-threshold='));
