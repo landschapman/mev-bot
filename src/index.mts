@@ -8,6 +8,7 @@ import { getSakeSwapPrice } from './dexClients/sakeswap.js';
 import { getBalancerPrice } from './dexClients/balancer.js';
 import { getKyberPrice } from './dexClients/kyber.mjs';
 import { getCurvePrice } from './dexClients/curve.js';
+// import { getBancorPriceOnChainOrApi } from './dexClients/bancor.js';
 import { checkArb, PriceSource } from './arbitrage/checkArb.js';
 import chalk from 'chalk';
 
@@ -29,6 +30,7 @@ async function main() {
   let balancerPrice: number | null = null;
   let kyberPrice: number | null = null;
   let curvePrice: number | null = null;
+  // let bancorPrice: number | null = null;
 
   try {
     v2Price = await getUniswapV2Price(provider);
@@ -86,6 +88,13 @@ async function main() {
     console.error('Failed to fetch Curve price:', err);
   }
 
+  // try {
+  //   bancorPrice = await getBancorPriceOnChainOrApi(provider);
+  //   console.log('Bancor WETH/DAI price:', bancorPrice);
+  // } catch (err) {
+  //   console.error('Failed to fetch Bancor price:', err);
+  // }
+
   // Build price sources array
   const priceSources: PriceSource[] = [
     { name: 'Uniswap V2', price: v2Price },
@@ -96,6 +105,8 @@ async function main() {
     { name: 'Balancer', price: balancerPrice },
     { name: 'Kyber', price: kyberPrice },
     { name: 'Curve', price: curvePrice },
+    // To re-enable Bancor, uncomment the lines above and below:
+    // { name: 'Bancor', price: bancorPrice },
   ];
 
   // Print summary table of all DEX prices
