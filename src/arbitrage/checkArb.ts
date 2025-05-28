@@ -5,7 +5,7 @@ export interface PriceSource {
   price: number | null | undefined;
 }
 
-interface ArbitrageOpportunity {
+export interface ArbitrageOpportunity {
   buyDex: string;
   sellDex: string;
   buyPrice: number;
@@ -17,32 +17,30 @@ interface ArbitrageOpportunity {
  * Checks for arbitrage opportunities between DEX price sources.
  * Reports the top 3 most profitable opportunities where sellPrice > buyPrice.
  * @param sources Array of { name, price } objects
+ * @param thresholdPct Minimum profit percent (optional)
+ * @param quiet If true, suppress console output (for dashboard)
+ * @returns { top: ArbitrageOpportunity[], warn: string[] }
  */
 export function checkArb(
   sources: PriceSource[],
-  thresholdPct: number = 0 // kept for backwards compatibility
-) {
-  const EPSILON = 1e-8; // Small number to handle floating point comparison
+  thresholdPct: number = 0,
+  quiet: boolean = false
+): { top: ArbitrageOpportunity[]; warn: string[] } {
+  const EPSILON = 1e-8;
   const opportunities: ArbitrageOpportunity[] = [];
+  const warnings: string[] = [];
 
-  // Filter out sources with null/undefined prices
   const validSources = sources.filter(
     source => source.price != null && !isNaN(source.price)
   );
 
   for (const buyDex of validSources) {
     for (const sellDex of validSources) {
-      // Skip same-DEX comparisons
       if (buyDex.name === sellDex.name) continue;
-
-      const buyPrice = buyDex.price!; // Non-null assertion is safe due to filter
+      const buyPrice = buyDex.price!;
       const sellPrice = sellDex.price!;
-      
-      // Calculate profit percentage
       const profitPct = ((sellPrice - buyPrice) / buyPrice) * 100;
-
-      // Collect all positive arbitrage opportunities
-      if (sellPrice > buyPrice && profitPct > EPSILON) {
+      if (sellPrice > buyPrice && profitPct > Math.max(EPSILON, thresholdPct)) {
         opportunities.push({
           buyDex: buyDex.name,
           sellDex: sellDex.name,
@@ -54,24 +52,29 @@ export function checkArb(
     }
   }
 
-  // Sort opportunities by profit percentage (highest first) and take top 3
   opportunities.sort((a, b) => b.profitPct - a.profitPct);
   const topOpportunities = opportunities.slice(0, 3);
 
-  if (topOpportunities.length > 0) {
-    console.log(chalk.blue('\n=== Top 3 Arbitrage Opportunities ==='));
-    topOpportunities.forEach((opp, index) => {
-      console.log(
-        chalk.green(
-          `${index + 1}. Buy from ${opp.buyDex} at ${opp.buyPrice.toFixed(2)}, sell to ${opp.sellDex} at ${opp.sellPrice.toFixed(2)} (profit ~${opp.profitPct.toFixed(2)}%)`
-        )
-      );
-    });
-    if (opportunities.length > 3) {
-      console.log(chalk.gray(`\n(${opportunities.length - 3} other opportunities not shown)`));
+  if (!quiet) {
+    if (topOpportunities.length > 0) {
+      console.log(chalk.blue('\n=== Top 3 Arbitrage Opportunities ==='));
+      topOpportunities.forEach((opp, index) => {
+        console.log(
+          chalk.green(
+            `${index + 1}. Buy from ${opp.buyDex} at ${opp.buyPrice.toFixed(2)}, sell to ${opp.sellDex} at ${opp.sellPrice.toFixed(2)} (profit ~${opp.profitPct.toFixed(2)}%)`
+          )
+        );
+      });
+      if (opportunities.length > 3) {
+        console.log(chalk.gray(`\n(${opportunities.length - 3} other opportunities not shown)`));
+      }
+      console.log(chalk.blue('=====================================\n'));
+    } else {
+      console.log(chalk.yellow('No arbitrage opportunities found.'));
     }
-    console.log(chalk.blue('=====================================\n'));
-  } else {
-    console.log(chalk.yellow('No arbitrage opportunities found.'));
   }
+  if (topOpportunities.length === 0) {
+    warnings.push('No arbitrage opportunities found.');
+  }
+  return { top: topOpportunities, warn: warnings };
 } 

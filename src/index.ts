@@ -1,14 +1,15 @@
 import 'dotenv/config';
 import { ethers } from 'ethers';
-import { getUniswapV2Price } from './dexClients/uniswapV2.js';
-import { getUniswapV3Price } from './dexClients/uniswapV3.js';
-import { getSushiSwapPrice } from './dexClients/sushiswap.js';
-import { getShibaSwapPrice } from './dexClients/shibaswap.js';
-import { getSakeSwapPrice } from './dexClients/sakeswap.js';
-import { getBalancerPrice } from './dexClients/balancer.js';
-import { getKyberPrice } from './dexClients/kyber.mjs';
+import { getPrice as getUniswapV2Price } from './dexClients/uniswapV2.js';
+import { getPrice as getUniswapV3Price } from './dexClients/uniswapV3.js';
+import { getPrice as getSushiSwapPrice } from './dexClients/sushiswap.js';
+import { getPrice as getShibaSwapPrice } from './dexClients/shibaswap.js';
+import { getPrice as getSakeSwapPrice } from './dexClients/sakeswap.js';
+import { getPrice as getBalancerPrice } from './dexClients/balancer.js';
+import { getPrice as getKyberPrice } from './dexClients/kyber.mjs';
 import { checkArb, PriceSource } from './arbitrage/checkArb.js';
 import chalk from 'chalk';
+import { latestPrices, topSpreads, warnings } from './state.js';
 
 async function main() {
   const rpcUrl = process.env.RPC_URL;
@@ -88,6 +89,14 @@ async function main() {
     { name: 'Kyber', price: kyberPrice },
   ];
 
+  // Update dashboard state: latestPrices
+  latestPrices.length = 0;
+  for (const src of priceSources) {
+    if (src.price != null && !isNaN(src.price)) {
+      latestPrices.push({ dex: src.name, price: src.price });
+    }
+  }
+
   // CLI flag for threshold
   const thresholdArg = process.argv.find(arg => arg.startsWith('--arb-threshold='));
   let threshold = 0;
@@ -97,8 +106,19 @@ async function main() {
     else console.log(chalk.yellow('Invalid --arb-threshold value, using default 0%'));
   }
 
-  // Run arbitrage check
-  checkArb(priceSources, threshold);
+  // Run arbitrage check and update dashboard state: topSpreads
+  const { top, warn } = checkArb(priceSources, threshold, true);
+  topSpreads.length = 0;
+  for (const opp of top) {
+    topSpreads.push({ buy: opp.buyDex, sell: opp.sellDex, profit: opp.profitPct });
+  }
+  warnings.length = 0;
+  for (const w of warn) warnings.push(w);
+
+  if (process.env.DASH_ENABLE === 'true') {
+    // Start dashboard server in the same process so state arrays are shared
+    await import('./dashboard/server.js');
+  }
 }
 
 main(); 

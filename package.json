@@ -4,7 +4,10 @@
   "main": "dist/index.js",
   "scripts": {
     "start": "node dist/index.mjs",
-    "build": "tsc"
+    "build": "tsc",
+    "dashboard": "cross-env DASH_ENABLE=true DASH_PORT=4000 DASH_REFRESH_MS=15000 ts-node --loader ts-node/esm src/dashboard/server.ts",
+    "dashboard:build": "tsc src/dashboard/server.ts --outDir dist/dashboard",
+    "dashboard:start": "node dist/dashboard/server.js"
   },
   "dependencies": {
     "@bancor/sdk": "^0.2.10",
@@ -12,11 +15,15 @@
     "@uniswap/sdk-core": "^3.0.3",
     "@uniswap/v3-sdk": "^3.11.0",
     "dotenv": "^16.3.1",
+    "ejs": "^3.1.10",
     "ethers": "^5.7.2",
+    "express": "^5.1.0",
     "node-fetch": "^3.3.2"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
+    "@types/express": "^5.0.2",
+    "@types/node": "^22.15.23",
+    "cross-env": "^7.0.3",
     "ts-node": "^10.9.2",
     "typescript": "^5.4.2"
   },
