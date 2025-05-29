@@ -30,15 +30,17 @@ let lastPayload: DashboardPayload | null = null;
 function buildPayload(): DashboardPayload {
   return {
     timestamp: Date.now(),
-    prices: latestPrices,
-    topSpreads: topSpreads.slice(0, 5),
-    warnings,
+    prices: [...latestPrices],
+    topSpreads: [...topSpreads.slice(0, 5)],
+    warnings: [...warnings],
     full: true
   };
 }
 
 // GET /
 app.get("/", (_req: Request, res: Response) => {
+  // Reset diff cache so a new browser session gets full payload first
+  lastPayload = null;
   res.render("index", {
     refresh: process.env.DASH_REFRESH_MS ?? 15000
   });

@@ -150,4 +150,37 @@ async function main() {
   }
 }
 
-main(); 
+// Determine interval from CLI flag, env var, or default
+const intervalArg = process.argv.find(arg => arg.startsWith('--interval='));
+let intervalSec: number | undefined = undefined;
+let intervalSource = 'default (45)';
+if (intervalArg) {
+  const val = parseInt(intervalArg.split('=')[1], 10);
+  if (!isNaN(val) && val > 0) {
+    intervalSec = val;
+    intervalSource = 'CLI flag';
+  }
+}
+if (intervalSec === undefined && process.env.PRICE_CHECK_INTERVAL_SECONDS) {
+  const val = parseInt(process.env.PRICE_CHECK_INTERVAL_SECONDS, 10);
+  if (!isNaN(val) && val > 0) {
+    intervalSec = val;
+    intervalSource = 'env var';
+  }
+}
+if (intervalSec === undefined) intervalSec = 45;
+const intervalMs = intervalSec * 1000;
+
+async function runLoop() {
+  while (true) {
+    try {
+      await main();
+    } catch (err) {
+      console.error('Error in main():', err);
+    }
+    console.log(`Waiting ${intervalSec} seconds before next price check... (source: ${intervalSource})`);
+    await new Promise(res => setTimeout(res, intervalMs));
+  }
+}
+
+runLoop(); 
