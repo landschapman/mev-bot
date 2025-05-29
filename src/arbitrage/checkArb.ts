@@ -1,4 +1,5 @@
 import chalk from 'chalk';
+import { getGasCostInDai } from '../gas/gasEstimator.js';
 
 export interface PriceSource {
   name: string;
@@ -21,11 +22,11 @@ export interface ArbitrageOpportunity {
  * @param quiet If true, suppress console output (for dashboard)
  * @returns { top: ArbitrageOpportunity[], warn: string[] }
  */
-export function checkArb(
+export async function checkArb(
   sources: PriceSource[],
   thresholdPct: number = 0,
   quiet: boolean = false
-): { top: ArbitrageOpportunity[]; warn: string[] } {
+): Promise<{ top: ArbitrageOpportunity[]; warn: string[] }> {
   const EPSILON = 1e-8;
   const opportunities: ArbitrageOpportunity[] = [];
   const warnings: string[] = [];
@@ -39,7 +40,15 @@ export function checkArb(
       if (buyDex.name === sellDex.name) continue;
       const buyPrice = buyDex.price!;
       const sellPrice = sellDex.price!;
-      const profitPct = ((sellPrice - buyPrice) / buyPrice) * 100;
+      const profitPctRaw = ((sellPrice - buyPrice) / buyPrice) * 100;
+
+      // Gas-aware filtering
+      const gasBuy = await getGasCostInDai(buyDex.name);
+      const gasSell = await getGasCostInDai(sellDex.name);
+      const gasTotal = gasBuy + gasSell;
+      const minSpreadPct = (gasTotal / buyPrice) * 100; // required percent just to break even
+      const profitPct = profitPctRaw - minSpreadPct;
+
       if (sellPrice > buyPrice && profitPct > Math.max(EPSILON, thresholdPct)) {
         opportunities.push({
           buyDex: buyDex.name,

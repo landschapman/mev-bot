@@ -1,0 +1,11 @@
+time,buyDex,buy,sellDex,sell,spreadPct,gasDAI,netProfitDAI,currentBalance,ethAmount
+
+=== FINAL SUMMARY ===
+Test Duration: 5.4 minutes
+Starting Balance: 1000.00 DAI
+Final Balance: 1000.00 DAI
+Total Return: 0.00%
+Trades Executed: 0
+Gross Profit: 0.0000 DAI
+Total Gas Cost: 0.0000 DAI
+Net Profit: 0.0000 DAI

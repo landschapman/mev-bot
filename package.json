@@ -8,7 +8,8 @@
     "dashboard": "cross-env DASH_ENABLE=true DASH_PORT=4000 DASH_REFRESH_MS=15000 ts-node --loader ts-node/esm src/dashboard/server.ts",
     "dashboard:build": "tsc src/dashboard/server.ts --outDir dist/dashboard",
     "dashboard:start": "node dist/dashboard/server.js",
-    "release": "npm run build && release.bat"
+    "release": "npm run build && release.bat",
+    "test-run": "cross-env TEST_MODE=true NODE_NO_WARNINGS=1 node --loader ts-node/esm src/index.ts"
   },
   "dependencies": {
     "@bancor/sdk": "^0.2.10",

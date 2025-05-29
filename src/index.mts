@@ -13,6 +13,9 @@ import { checkArb, PriceSource } from './arbitrage/checkArb.js';
 import chalk from 'chalk';
 import { latestPrices, topSpreads, warnings } from './state.js';
 
+// Keep latest priceSources for potential future extensions
+let lastPriceSources: PriceSource[] = [];
+
 async function main() {
   const rpcUrl = process.env.RPC_URL;
   if (!rpcUrl) {
@@ -135,7 +138,8 @@ async function main() {
   }
 
   // Run arbitrage check and update dashboard state
-  const { top, warn } = checkArb(priceSources, threshold, true);
+  const { top, warn } = await checkArb(priceSources, threshold, true);
+  lastPriceSources = priceSources;
   topSpreads.length = 0;
   for (const opp of top) {
     topSpreads.push({ buy: opp.buyDex, sell: opp.sellDex, profit: opp.profitPct });
