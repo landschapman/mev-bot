@@ -29,25 +29,7 @@ const KYBER_API = 'https://aggregator-api.kyberswap.com/ethereum/api/v1/routes';
 
 export async function getPrice(provider: ethers.providers.Provider): Promise<number | null> {
   const debug = process.env.DEX_DEBUG === 'true';
-  for (let attempt = 1; attempt <= 3; ++attempt) {
-    try {
-      // Try on-chain router call
-      const router = new ethers.Contract(KYBER_ROUTER, KyberRouterABI, provider);
-      await checkAbi(router, ['getAmountsOut'], debug);
-      const amountIn = ethers.utils.parseEther('1');
-      const amounts = await router.getAmountsOut(WETH_ADDRESS, DAI_ADDRESS, amountIn);
-      if (amounts && amounts.length > 1) {
-        const price = Number(ethers.utils.formatUnits(amounts[1], 18));
-        if (debug) console.log('[Kyber] On-chain price:', price);
-        return price;
-      }
-    } catch (err: any) {
-      if (debug) console.error(`[Kyber] On-chain attempt ${attempt} failed:`, err);
-      if (err.code === 'CALL_EXCEPTION' && attempt < 3) await sleep(250);
-      else if (attempt === 3) break;
-    }
-  }
-  // Fallback to API
+  // Only use the API for Kyber price quotes
   try {
     const amountIn = ethers.utils.parseEther('1').toString();
     const url = `${KYBER_API}?tokenIn=${WETH_ADDRESS}&tokenOut=${DAI_ADDRESS}&amountIn=${amountIn}`;

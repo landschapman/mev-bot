@@ -36,6 +36,7 @@ export async function getPrice(provider: ethers.providers.Provider): Promise<num
     try {
       const factory = new ethers.Contract(SHIBASWAP_FACTORY, IUniswapV2FactoryABI, provider);
       pairAddress = await factory.getPair(WETH_ADDRESS, DAI_ADDRESS);
+      if (debug) console.log('[ShibaSwap] Pair address:', pairAddress);
       if (pairAddress === ethers.constants.AddressZero) throw new Error('ShibaSwap WETH/DAI pair not initialized');
       pairContract = new ethers.Contract(pairAddress, IUniswapV2PairABI, provider);
       await checkAbi(pairContract, ['getReserves', 'token0', 'token1'], debug);

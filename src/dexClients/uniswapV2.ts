@@ -88,6 +88,7 @@ export async function getPrice(provider: ethers.providers.Provider): Promise<num
       // Get pair address
       const factory = new ethers.Contract(UNISWAP_V2_FACTORY, IUniswapV2FactoryABI, provider);
       pairAddress = await factory.getPair(WETH_ADDRESS, DAI_ADDRESS);
+      if (debug) console.log('[UniswapV2] Pair address:', pairAddress);
       if (pairAddress === ethers.constants.AddressZero) throw new Error('UniswapV2 WETH/DAI pair not initialized');
       pairContract = new ethers.Contract(pairAddress, IUniswapV2PairABI, provider);
       // ABI check

@@ -1,3 +1,8 @@
 # One terminal only
-$env:DASH_ENABLE="true"; npm start      #run both bot and local host
+$env:DASH_ENABLE="true"; node dist/index.js --interval=60; npm start      #run both bot and local host
 npm start          # runs node dist/index.mjs
+
+$env:DASH_ENABLE='true'
+node dist/index.js --interval=60
+
+$env:DASH_ENABLE="true"; node dist/index.js --interval=60; npm start
