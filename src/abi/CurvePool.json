@@ -1,0 +1,26 @@
+[
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "buyer", "type": "address" },
+      { "indexed": true, "internalType": "int128", "name": "sold_id", "type": "int128" },
+      { "indexed": true, "internalType": "int128", "name": "bought_id", "type": "int128" },
+      { "indexed": false, "internalType": "uint256", "name": "tokens_sold", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "tokens_bought", "type": "uint256" }
+    ],
+    "name": "TokenExchange",
+    "type": "event"
+  },
+  {
+    "anonymous": false,
+    "inputs": [
+      { "indexed": true, "internalType": "address", "name": "buyer", "type": "address" },
+      { "indexed": true, "internalType": "int128", "name": "sold_id", "type": "int128" },
+      { "indexed": true, "internalType": "int128", "name": "bought_id", "type": "int128" },
+      { "indexed": false, "internalType": "uint256", "name": "tokens_sold", "type": "uint256" },
+      { "indexed": false, "internalType": "uint256", "name": "tokens_bought", "type": "uint256" }
+    ],
+    "name": "TokenExchangeUnderlying",
+    "type": "event"
+  }
+] 

@@ -13,6 +13,18 @@ import fs from 'fs';
 import path from 'path';
 import chalk from 'chalk';
 import { latestPrices, topSpreads, warnings } from './state.js';
+import { providers as multicallProviders } from '@0xsequence/multicall';
+import IUniswapV2Pair from './abi/IUniswapV2Pair.json' with { type: 'json' };
+import BalancerVaultABI from './abi/BalancerVault.json' with { type: 'json' };
+import BalancerWeightedPoolABI from './abi/BalancerWeightedPool.json' with { type: 'json' };
+import { getPrice as getDODOPrice } from './dexClients/dodo.js';
+import { getPrice as getCurvePrice } from './dexClients/curve.js';
+import { getPrice as getBancorPrice } from './dexClients/bancor.js';
+import { getPrice as getLuaSwapPrice } from './dexClients/luaswap.js';
+// @ts-ignore
+import { FlashbotsBundleProvider } from '@flashbots/ethers-provider-bundle';
+import CurvePoolABI from './abi/CurvePool.json' with { type: 'json' };
+import DODOV2PoolABI from './abi/DODOV2Pool.json' with { type: 'json' };
 
 // keep latest priceSources for TEST_MODE calculations
 let lastPriceSources: PriceSource[] = [];
@@ -47,73 +59,138 @@ const dexFeeTable: Record<string, number> = {
   'Curve': 0.001
 };
 
+// Use WebSocketProvider for event-driven price checks
+const wssUrl = process.env.ETHEREUM_WSS_URL;
+if (!wssUrl) {
+  throw new Error('ETHEREUM_WSS_URL not set in .env');
+}
+const wsProvider = new ethers.providers.WebSocketProvider(wssUrl);
+
 // Generate wallet once
 const rpcUrl = process.env.RPC_URL;
 if (!rpcUrl) {
   throw new Error('RPC_URL not set in .env');
 }
 const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+const multicallProvider = new multicallProviders.MulticallProvider(provider);
 const wallet = ethers.Wallet.createRandom();
 console.log('Fake wallet address:', wallet.address);
 
-async function main() {
-  // Declare price variables at the top
-  let v2Price: number | null = null;
-  let v3Price: number | null = null;
-  let sushiPrice: number | null = null;
-  let shibaPrice: number | null = null;
-  let sakePrice: number | null = null;
-  let balancerPrice: number | null = null;
-  let kyberPrice: number | null = null;
+// Block-level price cache
+const priceCache: Record<number, Record<string, number | null>> = {};
+let lastBlockNumber = 0;
+
+async function getCachedPrice(
+  dex: string,
+  getPriceFn: (provider: any) => Promise<number | null>,
+  provider: any,
+  blockNumber: number
+): Promise<number | null> {
+  if (!blockNumber) return null; // Guard against undefined blockNumber
+
+  if (priceCache[blockNumber] === undefined) priceCache[blockNumber] = {};
+  if (priceCache[blockNumber][dex] !== undefined) return priceCache[blockNumber][dex];
 
   try {
-    v2Price = await getUniswapV2Price(provider);
-    console.log('Uniswap V2 WETH/DAI price:', v2Price);
-  } catch (err) {
-    console.error('Failed to fetch Uniswap V2 price:', err);
+    const price = await getPriceFn(provider);
+    (priceCache[blockNumber] ??= {})[dex] = price; // atomic assignment
+    return price;
+  } catch (e) {
+    (priceCache[blockNumber] ??= {})[dex] = null; // atomic assignment
+    return null;
   }
+}
 
-  try {
-    v3Price = await getUniswapV3Price(provider);
-    console.log('Uniswap V3 WETH/DAI price:', v3Price);
-  } catch (err) {
-    console.error('Failed to fetch Uniswap V3 price:', err);
-  }
+// Set up Flashbots provider for atomic execution
+let flashbotsProvider: FlashbotsBundleProvider | null = null;
+(async () => {
+  flashbotsProvider = await FlashbotsBundleProvider.create(
+    provider,
+    ethers.Wallet.createRandom() // Flashbots relay signing wallet
+  );
+})();
 
+function safeAddress(addr: string): string {
   try {
-    sushiPrice = await getSushiSwapPrice(provider);
-    console.log('SushiSwap WETH/DAI price:', sushiPrice);
-  } catch (err) {
-    console.error('Failed to fetch SushiSwap price:', err);
+    return ethers.utils.getAddress(addr);
+  } catch (err: any) {
+    if (
+      TEST_MODE &&
+      err.code === 'INVALID_ARGUMENT' &&
+      /bad address checksum/i.test(err.message)
+    ) {
+      console.warn(`Warning: Address ${addr} has an invalid checksum. Using lowercase for test mode.`);
+      return addr.toLowerCase();
+    }
+    throw err;
   }
+}
 
-  try {
-    shibaPrice = await getShibaSwapPrice(provider);
-    console.log('ShibaSwap WETH/DAI price:', shibaPrice);
-  } catch (err) {
-    console.error('Failed to fetch ShibaSwap price:', err);
-  }
+// Pair addresses for event-driven DEXes
+const PAIR_ADDRESSES: Record<string, string> = {
+  'Uniswap V2': safeAddress('0xA478c2975Ab1Ea89e8196811F51A7B7Ade33eB11'),
+  'SushiSwap': safeAddress('0x6c6Bc977E13Df9b0de53b251522280BB72383700'),
+  'ShibaSwap': safeAddress('0x795065dCc9f64b5614C407a6EFDC400DA6221FB0'),
+  // 'SakeSwap': 'REPLACE_WITH_VALID_ADDRESS' // No canonical WETH/DAI pool on mainnet
+  // 'LuaSwap': 'REPLACE_WITH_VALID_ADDRESS' // No canonical WETH/DAI pool on mainnet
+};
 
-  try {
-    sakePrice = await getSakeSwapPrice(provider);
-    console.log('SakeSwap WETH/DAI price:', sakePrice);
-  } catch (err) {
-    console.error('Failed to fetch SakeSwap price:', err);
-  }
+// Debounce map to avoid duplicate triggers within the same block
+const lastSwapBlock: Record<string, number> = {};
 
-  try {
-    balancerPrice = await getBalancerPrice(provider);
-    console.log('Balancer WETH/DAI price:', balancerPrice);
-  } catch (err) {
-    console.error('Failed to fetch Balancer price:', err);
-  }
+const UNISWAP_V3_POOL = safeAddress('0xc2e9f25be6257c210d7adf0d4cd6e3e881ba25f8'); // 0.3% fee WETH/DAI pool
+const BALANCER_VAULT = safeAddress('0xBA12222222228d8Ba445958a75a0704d566BF2C8');
+const BALANCER_WETH_DAI_POOL_ID = '0x0b09dea16768f0799065c475be02919503cb2a3500020000000000000000001a';
+const CURVE_POOL = safeAddress('0xa2b47e3d5c44877cca798226b7b8118f9bfb7a56'); // Mainnet 3pool DAI/USDC/USDT
+const DODO_V2_POOL = safeAddress('0xa356867fdcea8e71aeaf87805808803806231fdc'); // Mainnet DODO V2 WETH/DAI pool
+const BANCOR_NETWORK = safeAddress('0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE'); // Replace with actual Bancor Network contract address
+const KYBER_NETWORK_PROXY = safeAddress('0x818E6FECD516Ecc3849DAf6845e3EC868087B755'); // Mainnet Kyber Network Proxy
 
-  try {
-    kyberPrice = await getKyberPrice(provider);
-    console.log('Kyber WETH/DAI price:', kyberPrice);
-  } catch (err) {
-    console.error('Failed to fetch Kyber price:', err);
+async function main(blockNumber: number) {
+  // Invalidate old cache
+  if (blockNumber !== lastBlockNumber) {
+    for (const key in priceCache) {
+      if (Number(key) !== blockNumber) delete priceCache[key];
+    }
+    lastBlockNumber = blockNumber;
   }
+  // Batch all price fetches using Promise.all and multicallProvider
+  const [
+    v2Price,
+    v3Price,
+    sushiPrice,
+    shibaPrice,
+    sakePrice,
+    balancerPrice,
+    kyberPrice,
+    dodoPrice,
+    curvePrice,
+    bancorPrice,
+    luaswapPrice
+  ] = await Promise.all([
+    getCachedPrice('Uniswap V2', getUniswapV2Price, multicallProvider, blockNumber),
+    getCachedPrice('Uniswap V3', getUniswapV3Price, multicallProvider, blockNumber),
+    getCachedPrice('SushiSwap', getSushiSwapPrice, multicallProvider, blockNumber),
+    getCachedPrice('ShibaSwap', getShibaSwapPrice, multicallProvider, blockNumber),
+    getCachedPrice('SakeSwap', getSakeSwapPrice, multicallProvider, blockNumber),
+    getCachedPrice('Balancer', getBalancerPrice, multicallProvider, blockNumber),
+    getCachedPrice('Kyber', getKyberPrice, multicallProvider, blockNumber),
+    getCachedPrice('DODO', getDODOPrice, multicallProvider, blockNumber),
+    getCachedPrice('Curve', getCurvePrice, multicallProvider, blockNumber),
+    getCachedPrice('Bancor', getBancorPrice, multicallProvider, blockNumber),
+    getCachedPrice('LuaSwap', getLuaSwapPrice, multicallProvider, blockNumber)
+  ]);
+  if (v2Price != null) console.log('Uniswap V2 WETH/DAI price:', v2Price);
+  if (v3Price != null) console.log('Uniswap V3 WETH/DAI price:', v3Price);
+  if (sushiPrice != null) console.log('SushiSwap WETH/DAI price:', sushiPrice);
+  if (shibaPrice != null) console.log('ShibaSwap WETH/DAI price:', shibaPrice);
+  if (sakePrice != null) console.log('SakeSwap WETH/DAI price:', sakePrice);
+  if (balancerPrice != null) console.log('Balancer WETH/DAI price:', balancerPrice);
+  if (kyberPrice != null) console.log('Kyber WETH/DAI price:', kyberPrice);
+  if (dodoPrice != null) console.log('DODO WETH/DAI price:', dodoPrice);
+  if (curvePrice != null) console.log('Curve WETH/DAI price:', curvePrice);
+  if (bancorPrice != null) console.log('Bancor WETH/DAI price:', bancorPrice);
+  if (luaswapPrice != null) console.log('LuaSwap WETH/DAI price:', luaswapPrice);
 
   // Build price sources array
   const priceSources: PriceSource[] = [
@@ -124,6 +201,10 @@ async function main() {
     { name: 'SakeSwap', price: sakePrice },
     { name: 'Balancer', price: balancerPrice },
     { name: 'Kyber', price: kyberPrice },
+    { name: 'DODO', price: dodoPrice },
+    { name: 'Curve', price: curvePrice },
+    { name: 'Bancor', price: bancorPrice },
+    { name: 'LuaSwap', price: luaswapPrice },
   ];
 
   // Update dashboard state: latestPrices
@@ -174,112 +255,233 @@ if (TEST_MODE) {
   console.log(`Logging to ${logFilePath}`);
 }
 
-async function runLoop() {
-  while (true) {
-    try {
-      await main();
-
-      if (TEST_MODE) {
-        // Find the most profitable trade
-        let bestTrade = null;
-        let bestNetProfit = -Infinity;
-        let bestTradeDetails = null;
-        for (const opp of topSpreads) {
-          const gasBuy = await getGasCostInDai(opp.buy);
-          const gasSell = await getGasCostInDai(opp.sell);
-          const gasTotal = gasBuy + gasSell;
-          const buySrc = lastPriceSources.find(p => p.name === opp.buy);
-          const sellSrc = lastPriceSources.find(p => p.name === opp.sell);
-          if (!buySrc || !sellSrc || buySrc.price == null || sellSrc.price == null) continue;
-          const buyFee = dexFeeTable[opp.buy] ?? 0.003;
-          const sellFee = dexFeeTable[opp.sell] ?? 0.003;
-          const buyPriceWithFee = buySrc.price * (1 + buyFee);
-          const sellPriceWithFee = sellSrc.price * (1 - sellFee);
-          const priceDiffPerEth = sellPriceWithFee - buyPriceWithFee;
-          const maxEthPossible = currentBalance / buyPriceWithFee;
-          const ethAmount = maxEthPossible * 0.9;
-          const daiNeeded = ethAmount * buyPriceWithFee;
-          const grossProfitForTrade = ethAmount * priceDiffPerEth;
-          const netProfitAfterGas = grossProfitForTrade - gasTotal;
-          if (netProfitAfterGas > bestNetProfit) {
-            bestNetProfit = netProfitAfterGas;
-            bestTrade = opp;
-            bestTradeDetails = {
-              buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal
-            };
-          }
-        }
-        if (bestTrade && bestTradeDetails) {
-          const { buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal } = bestTradeDetails;
-          console.log(chalk.blue('\nBest Trade Opportunity This Interval:'));
-          console.log(`Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI (fee: ${(buyFee*100).toFixed(2)}%)`);
-          console.log(`Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI (fee: ${(sellFee*100).toFixed(2)}%)`);
-          console.log(`Buy price w/ fee: ${buyPriceWithFee.toFixed(4)} DAI, Sell price w/ fee: ${sellPriceWithFee.toFixed(4)} DAI`);
-          console.log(`Price difference (after fees): ${priceDiffPerEth.toFixed(4)} DAI`);
-          console.log(`Trade amount: ${ethAmount.toFixed(6)} ETH`);
-          console.log(`Estimated gas cost: ${gasTotal.toFixed(4)} DAI`);
-          console.log(`Potential profit before gas: ${grossProfitForTrade.toFixed(4)} DAI`);
-          console.log(`Potential profit after gas: ${netProfitAfterGas.toFixed(4)} DAI`);
-          if (netProfitAfterGas <= 0) {
-            console.log(chalk.yellow('Best trade is not profitable after gas/fees. Skipping.'));
-          } else if (daiNeeded > currentBalance) {
-            console.log(chalk.yellow(`Best trade requires more DAI (${daiNeeded.toFixed(2)}) than available balance (${currentBalance.toFixed(2)}). Skipping.`));
-          } else {
-            console.log(chalk.green('Executing best trade!'));
-            tradeCount += 1;
-            grossProfit += grossProfitForTrade;
-            totalGas += gasTotal;
-            netProfit += netProfitAfterGas;
-            currentBalance += netProfitAfterGas;
-            if (logFilePath) {
-              const line = `${new Date().toISOString()},${bestTrade.buy},${buySrc.price!},${bestTrade.sell},${sellSrc.price!},${bestTrade.profit.toFixed(2)},${gasTotal.toFixed(2)},${netProfitAfterGas.toFixed(4)},${currentBalance.toFixed(2)},${ethAmount.toFixed(6)},${buyFee},${sellFee}\n`;
-              fs.appendFileSync(logFilePath, line);
-            }
-            console.log(chalk.green(`Executed trade: ${ethAmount.toFixed(6)} ETH`));
-            console.log(`  Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI`);
-            console.log(`  Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI`);
-            console.log(`  Profit: ${netProfitAfterGas.toFixed(4)} DAI`);
-            console.log(`  New balance: ${currentBalance.toFixed(2)} DAI`);
-          }
-        } else {
-          console.log(chalk.yellow('No valid arbitrage opportunities found this interval.'));
-        }
-
-        // Check duration
-        if (Date.now() - testStart >= TEST_DURATION_MIN * 60 * 1000) {
-          // Write final summary to log file
-          if (logFilePath) {
-            fs.appendFileSync(logFilePath, '\n=== FINAL SUMMARY ===\n');
-            fs.appendFileSync(logFilePath, `Test Duration: ${((Date.now() - testStart) / 60000).toFixed(1)} minutes\n`);
-            fs.appendFileSync(logFilePath, `Starting Balance: ${STARTING_BALANCE_DAI.toFixed(2)} DAI\n`);
-            fs.appendFileSync(logFilePath, `Final Balance: ${currentBalance.toFixed(2)} DAI\n`);
-            fs.appendFileSync(logFilePath, `Total Return: ${((currentBalance - STARTING_BALANCE_DAI) / STARTING_BALANCE_DAI * 100).toFixed(2)}%\n`);
-            fs.appendFileSync(logFilePath, `Trades Executed: ${tradeCount}\n`);
-            fs.appendFileSync(logFilePath, `Gross Profit: ${grossProfit.toFixed(4)} DAI\n`);
-            fs.appendFileSync(logFilePath, `Total Gas Cost: ${totalGas.toFixed(4)} DAI\n`);
-            fs.appendFileSync(logFilePath, `Net Profit: ${netProfit.toFixed(4)} DAI\n`);
-          }
-
-          console.log('\n===== TEST MODE SUMMARY =====');
-          console.log(chalk.blue(`Test completed in ${((Date.now() - testStart) / 60000).toFixed(1)} minutes`));
-          console.log(`Starting Balance: ${STARTING_BALANCE_DAI.toFixed(2)} DAI`);
-          console.log(chalk.green(`Final Balance: ${currentBalance.toFixed(2)} DAI`));
-          console.log(chalk.green(`Total Return: ${((currentBalance - STARTING_BALANCE_DAI) / STARTING_BALANCE_DAI * 100).toFixed(2)}%`));
-          console.log(`Trades Executed: ${tradeCount}`);
-          console.log(`Average Trade Size: ${tradeCount > 0 ? (netProfit / tradeCount).toFixed(4) : '0.0000'} DAI`);
-          console.log(`Gross Profit: ${grossProfit.toFixed(4)} DAI`);
-          console.log(`Total Gas Cost: ${totalGas.toFixed(4)} DAI`);
-          console.log(chalk.green(`Net Profit: ${netProfit.toFixed(4)} DAI`));
-          console.log('==============================');
-          process.exit(0);
-        }
-      }
-    } catch (err) {
-      console.error('Error in main():', err);
-    }
-    console.log(`Waiting ${intervalSec} seconds before next price check... (source: ${intervalSource})`);
-    await new Promise(res => setTimeout(res, intervalMs));
-  }
+// Listen for Swap events on V2-style DEXes
+for (const [dex, pairAddress] of Object.entries(PAIR_ADDRESSES)) {
+  wsProvider.on({
+    address: pairAddress,
+    topics: [ethers.utils.id('Swap(address,uint256,uint256,uint256,uint256,address)')]
+  }, async (log) => {
+    const blockNumber = log.blockNumber;
+    if (lastSwapBlock[dex] === blockNumber) return; // debounce
+    lastSwapBlock[dex] = blockNumber;
+    console.log(chalk.cyan(`\nSwap event on ${dex} (block ${blockNumber})`));
+    await main(blockNumber);
+  });
 }
 
-runLoop(); 
+// Listen for Swap events on Uniswap V3
+wsProvider.on({
+  address: UNISWAP_V3_POOL,
+  topics: [ethers.utils.id('Swap(address,address,int256,int256,uint160,uint128,int24)')]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Uniswap V3'] === blockNumber) return; // debounce
+  lastSwapBlock['Uniswap V3'] = blockNumber;
+  console.log(chalk.cyan(`\nSwap event on Uniswap V3 (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Listen for Swap events on Balancer Vault (WETH/DAI pool only)
+wsProvider.on({
+  address: BALANCER_VAULT,
+  topics: [
+    ethers.utils.id('Swap(bytes32,address,address,uint256,uint256,address)'),
+    BALANCER_WETH_DAI_POOL_ID
+  ]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Balancer'] === blockNumber) return; // debounce
+  lastSwapBlock['Balancer'] = blockNumber;
+  console.log(chalk.cyan(`\nSwap event on Balancer WETH/DAI (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Listen for TokenExchange and TokenExchangeUnderlying events on Curve
+wsProvider.on({
+  address: CURVE_POOL,
+  topics: [
+    ethers.utils.id('TokenExchange(address,int128,int128,uint256,uint256)')
+  ]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Curve'] === blockNumber) return; // debounce
+  lastSwapBlock['Curve'] = blockNumber;
+  console.log(chalk.cyan(`\nTokenExchange event on Curve (block ${blockNumber})`));
+  await main(blockNumber);
+});
+wsProvider.on({
+  address: CURVE_POOL,
+  topics: [
+    ethers.utils.id('TokenExchangeUnderlying(address,int128,int128,uint256,uint256)')
+  ]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Curve'] === blockNumber) return; // debounce
+  lastSwapBlock['Curve'] = blockNumber;
+  console.log(chalk.cyan(`\nTokenExchangeUnderlying event on Curve (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Listen for Swap events on DODO V2
+wsProvider.on({
+  address: DODO_V2_POOL,
+  topics: [ethers.utils.id('Swap(address,uint256,uint256,address)')]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['DODO'] === blockNumber) return; // debounce
+  lastSwapBlock['DODO'] = blockNumber;
+  console.log(chalk.cyan(`\nSwap event on DODO V2 (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Listen for TokensTraded events on Bancor
+wsProvider.on({
+  address: BANCOR_NETWORK,
+  topics: [ethers.utils.id('TokensTraded(address,address,address,uint256,uint256,uint256,uint256)')]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Bancor'] === blockNumber) return; // debounce
+  lastSwapBlock['Bancor'] = blockNumber;
+  console.log(chalk.cyan(`\nTokensTraded event on Bancor (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Listen for ExecuteTrade events on Kyber
+wsProvider.on({
+  address: KYBER_NETWORK_PROXY,
+  topics: [ethers.utils.id('ExecuteTrade(address,address,address,address,uint256,uint256,address,uint256)')]
+}, async (log) => {
+  const blockNumber = log.blockNumber;
+  if (lastSwapBlock['Kyber'] === blockNumber) return; // debounce
+  lastSwapBlock['Kyber'] = blockNumber;
+  console.log(chalk.cyan(`\nExecuteTrade event on Kyber (block ${blockNumber})`));
+  await main(blockNumber);
+});
+
+// Fallback: still listen for new blocks for other DEXes
+wsProvider.on('block', async (blockNumber) => {
+  if (Object.values(lastSwapBlock).includes(blockNumber)) return; // already handled by swap event
+  console.log(chalk.cyan(`\nNew block: ${blockNumber}`));
+  try {
+    await main(blockNumber);
+    if (TEST_MODE) {
+      // Find the most profitable trade
+      let bestTrade = null;
+      let bestNetProfit = -Infinity;
+      let bestTradeDetails = null;
+      for (const opp of topSpreads) {
+        const gasBuy = await getGasCostInDai(opp.buy);
+        const gasSell = await getGasCostInDai(opp.sell);
+        const gasTotal = gasBuy + gasSell;
+        const buySrc = lastPriceSources.find(p => p.name === opp.buy);
+        const sellSrc = lastPriceSources.find(p => p.name === opp.sell);
+        if (!buySrc || !sellSrc || buySrc.price == null || sellSrc.price == null) continue;
+        const buyFee = dexFeeTable[opp.buy] ?? 0.003;
+        const sellFee = dexFeeTable[opp.sell] ?? 0.003;
+        const buyPriceWithFee = buySrc.price * (1 + buyFee);
+        const sellPriceWithFee = sellSrc.price * (1 - sellFee);
+        const priceDiffPerEth = sellPriceWithFee - buyPriceWithFee;
+        const maxEthPossible = currentBalance / buyPriceWithFee;
+        const ethAmount = maxEthPossible * 0.9;
+        const daiNeeded = ethAmount * buyPriceWithFee;
+        const grossProfitForTrade = ethAmount * priceDiffPerEth;
+        const netProfitAfterGas = grossProfitForTrade - gasTotal;
+        if (netProfitAfterGas > bestNetProfit) {
+          bestNetProfit = netProfitAfterGas;
+          bestTrade = opp;
+          bestTradeDetails = {
+            buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal
+          };
+        }
+      }
+      if (bestTrade && bestTradeDetails) {
+        const { buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal } = bestTradeDetails;
+        console.log(chalk.blue('\nBest Trade Opportunity This Block:'));
+        console.log(`Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI (fee: ${(buyFee*100).toFixed(2)}%)`);
+        console.log(`Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI (fee: ${(sellFee*100).toFixed(2)}%)`);
+        console.log(`Buy price w/ fee: ${buyPriceWithFee.toFixed(4)} DAI, Sell price w/ fee: ${sellPriceWithFee.toFixed(4)} DAI`);
+        console.log(`Price difference (after fees): ${priceDiffPerEth.toFixed(4)} DAI`);
+        console.log(`Trade amount: ${ethAmount.toFixed(6)} ETH`);
+        console.log(`Estimated gas cost: ${gasTotal.toFixed(4)} DAI`);
+        console.log(`Potential profit before gas: ${grossProfitForTrade.toFixed(4)} DAI`);
+        console.log(`Potential profit after gas: ${netProfitAfterGas.toFixed(4)} DAI`);
+        if (netProfitAfterGas <= 0) {
+          console.log(chalk.yellow('Best trade is not profitable after gas/fees. Skipping.'));
+        } else if (daiNeeded > currentBalance) {
+          console.log(chalk.yellow(`Best trade requires more DAI (${daiNeeded.toFixed(2)}) than available balance (${currentBalance.toFixed(2)}). Skipping.`));
+        } else {
+          console.log(chalk.green('Executing best trade!'));
+          if (flashbotsProvider) {
+            // Build dummy buy and sell txs (for simulation only)
+            const buyTx = {
+              to: '0x000000000000000000000000000000000000dead', // dummy address
+              value: ethers.utils.parseEther('0.01'), // dummy value
+              data: '0x',
+              gasLimit: 21000
+            };
+            const sellTx = {
+              to: '0x000000000000000000000000000000000000dead', // dummy address
+              value: ethers.utils.parseEther('0.01'), // dummy value
+              data: '0x',
+              gasLimit: 21000
+            };
+            const signedBundle = await flashbotsProvider.signBundle([
+              {
+                signer: wallet,
+                transaction: buyTx
+              },
+              {
+                signer: wallet,
+                transaction: sellTx
+              }
+            ]);
+            const blockNumber = await provider.getBlockNumber();
+            const simResult = await flashbotsProvider.simulate(signedBundle, blockNumber + 1);
+            if ('results' in simResult && simResult.results) {
+              console.log(chalk.magenta('Flashbots bundle simulation results:'), simResult.results);
+            } else if ('error' in simResult) {
+              console.log(chalk.red('Flashbots bundle simulation failed:'), simResult.error);
+            } else if ('message' in simResult) {
+              console.log(chalk.red('Flashbots bundle simulation failed:'), simResult.message);
+            } else {
+              console.log(chalk.red('Flashbots bundle simulation failed (unknown structure):'), JSON.stringify(simResult));
+            }
+            console.log('Would send Flashbots bundle for atomic execution.');
+          }
+          tradeCount += 1;
+          grossProfit += grossProfitForTrade;
+          totalGas += gasTotal;
+          netProfit += netProfitAfterGas;
+          currentBalance += netProfitAfterGas;
+          if (logFilePath) {
+            const line = `${new Date().toISOString()},${bestTrade.buy},${buySrc.price!},${bestTrade.sell},${sellSrc.price!},${bestTrade.profit.toFixed(2)},${gasTotal.toFixed(2)},${netProfitAfterGas.toFixed(4)},${currentBalance.toFixed(2)},${ethAmount.toFixed(6)},${buyFee},${sellFee}\n`;
+            fs.appendFileSync(logFilePath, line);
+          }
+          console.log(chalk.green(`Executed trade: ${ethAmount.toFixed(6)} ETH`));
+          console.log(`  Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI`);
+          console.log(`  Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI`);
+          console.log(`  Profit: ${netProfitAfterGas.toFixed(4)} DAI`);
+          console.log(`  New balance: ${currentBalance.toFixed(2)} DAI`);
+        }
+      } else {
+        console.log(chalk.yellow('No valid arbitrage opportunities found this block.'));
+      }
+
+      // Check duration
+      if (Date.now() - testStart >= TEST_DURATION_MIN * 60 * 1000) {
+        // Write final summary to log file
+        if (logFilePath) {
+          fs.appendFileSync(logFilePath, '\n=== FINAL SUMMARY ===\n');
+          fs.appendFileSync(logFilePath, `Test Duration: ${((Date.now() - testStart) / 60000).toFixed(1)} minutes\n`);
+          fs.appendFileSync(logFilePath, `Starting Balance: ${STARTING_BALANCE_DAI.toFixed(2)} DAI\n`);
+          fs.appendFileSync(logFilePath, `Final Balance: ${currentBalance.toFixed(2)} DAI\n`);
+          fs.appendFileSync(logFilePath, `Total Return: ${((currentBalance - STARTING_BALANCE_DAI) / STARTING_BALANCE_DAI * 100).toFixed(2)}%\n`);
+          fs.appendFileSync(logFilePath, `Trades Executed: ${tradeCount}\n`);
+          fs.appendFileSync(logFilePath, `Gross Profit: ${grossProfit.toFixed(4)} DAI\n`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('Error in main function:', error);
+  }
+});
