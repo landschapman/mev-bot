@@ -1,0 +1,14 @@
+time,buyDex,buy,sellDex,sell,spreadPct,gasDAI,netProfitDAI,currentBalance,ethAmount
+2025-05-31T04:09:12.051Z,Kyber,2507.787276,Balancer,2512.8230091559158,0.15,1.32,0.4856,1000.49,0.358882
+2025-05-31T04:10:01.844Z,Kyber,2506.299814,Balancer,2510.550685481897,0.12,1.34,0.1874,1000.67,0.359269
+2025-05-31T04:10:50.008Z,Kyber,2506.32714,Balancer,2510.550685481897,0.12,1.33,0.1873,1000.86,0.359333
+
+=== FINAL SUMMARY ===
+Test Duration: 5.3 minutes
+Starting Balance: 1000.00 DAI
+Final Balance: 1000.86 DAI
+Total Return: 0.09%
+Trades Executed: 3
+Gross Profit: 4.8521 DAI
+Total Gas Cost: 3.9919 DAI
+Net Profit: 0.8602 DAI
