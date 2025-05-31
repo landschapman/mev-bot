@@ -34,15 +34,29 @@ const intervalSec = 30;
 const intervalMs = intervalSec * 1000;
 const intervalSource = 'fixed (30s)';
 
-async function main() {
-  const rpcUrl = process.env.RPC_URL;
-  if (!rpcUrl) {
-    throw new Error('RPC_URL not set in .env');
-  }
-  const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
-  const wallet = ethers.Wallet.createRandom();
-  console.log('Fake wallet address:', wallet.address);
+// DEX fee table (default values, can be customized)
+const dexFeeTable: Record<string, number> = {
+  'Uniswap V2': 0.003,
+  'Uniswap V3': 0.003, // can be pool-specific
+  'SushiSwap': 0.003,
+  'ShibaSwap': 0.003,
+  'SakeSwap': 0.003,
+  'Balancer': 0.001,
+  'Bancor': 0.002,
+  'Kyber': 0.002,
+  'Curve': 0.001
+};
 
+// Generate wallet once
+const rpcUrl = process.env.RPC_URL;
+if (!rpcUrl) {
+  throw new Error('RPC_URL not set in .env');
+}
+const provider = new ethers.providers.JsonRpcProvider(rpcUrl);
+const wallet = ethers.Wallet.createRandom();
+console.log('Fake wallet address:', wallet.address);
+
+async function main() {
   // Declare price variables at the top
   let v2Price: number | null = null;
   let v3Price: number | null = null;
@@ -152,7 +166,7 @@ if (TEST_MODE) {
   logFilePath = path.join(logsDir, `sim_${Date.now()}.csv`);
   fs.writeFileSync(
     logFilePath,
-    'time,buyDex,buy,sellDex,sell,spreadPct,gasDAI,netProfitDAI,currentBalance,ethAmount\n',
+    'time,buyDex,buy,sellDex,sell,spreadPct,gasDAI,netProfitDAI,currentBalance,ethAmount,buyFee,sellFee\n',
     { flag: 'w' }
   );
   console.log(chalk.green(`=== Starting 5-minute Test Mode ===`));
@@ -166,73 +180,69 @@ async function runLoop() {
       await main();
 
       if (TEST_MODE) {
-        // Evaluate opportunities again for simulation (reuse latest topSpreads array)
+        // Find the most profitable trade
+        let bestTrade = null;
+        let bestNetProfit = -Infinity;
+        let bestTradeDetails = null;
         for (const opp of topSpreads) {
           const gasBuy = await getGasCostInDai(opp.buy);
           const gasSell = await getGasCostInDai(opp.sell);
           const gasTotal = gasBuy + gasSell;
-          
-          // We need absolute values; compute from priceSources array
           const buySrc = lastPriceSources.find(p => p.name === opp.buy);
           const sellSrc = lastPriceSources.find(p => p.name === opp.sell);
           if (!buySrc || !sellSrc || buySrc.price == null || sellSrc.price == null) continue;
-          
-          // Calculate the price difference per ETH
-          const priceDiffPerEth = sellSrc.price - buySrc.price;
-          
-          // Calculate maximum ETH we can buy with our current balance
-          const maxEthPossible = currentBalance / buySrc.price;
-          
-          // Use 90% of possible amount to leave room for price movements and fees
+          const buyFee = dexFeeTable[opp.buy] ?? 0.003;
+          const sellFee = dexFeeTable[opp.sell] ?? 0.003;
+          const buyPriceWithFee = buySrc.price * (1 + buyFee);
+          const sellPriceWithFee = sellSrc.price * (1 - sellFee);
+          const priceDiffPerEth = sellPriceWithFee - buyPriceWithFee;
+          const maxEthPossible = currentBalance / buyPriceWithFee;
           const ethAmount = maxEthPossible * 0.9;
-          
-          // Calculate actual DAI needed for this trade
-          const daiNeeded = ethAmount * buySrc.price;
-          
-          // Calculate potential profit for this trade size
+          const daiNeeded = ethAmount * buyPriceWithFee;
           const grossProfitForTrade = ethAmount * priceDiffPerEth;
           const netProfitAfterGas = grossProfitForTrade - gasTotal;
-
-          // Log potential opportunity details
-          console.log(chalk.blue('\nPotential Trade Opportunity:'));
-          console.log(`Buy from ${opp.buy} at ${buySrc.price.toFixed(2)} DAI`);
-          console.log(`Sell to ${opp.sell} at ${sellSrc.price.toFixed(2)} DAI`);
-          console.log(`Price difference: ${priceDiffPerEth.toFixed(4)} DAI`);
+          if (netProfitAfterGas > bestNetProfit) {
+            bestNetProfit = netProfitAfterGas;
+            bestTrade = opp;
+            bestTradeDetails = {
+              buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal
+            };
+          }
+        }
+        if (bestTrade && bestTradeDetails) {
+          const { buySrc, sellSrc, buyFee, sellFee, buyPriceWithFee, sellPriceWithFee, priceDiffPerEth, ethAmount, daiNeeded, grossProfitForTrade, netProfitAfterGas, gasTotal } = bestTradeDetails;
+          console.log(chalk.blue('\nBest Trade Opportunity This Interval:'));
+          console.log(`Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI (fee: ${(buyFee*100).toFixed(2)}%)`);
+          console.log(`Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI (fee: ${(sellFee*100).toFixed(2)}%)`);
+          console.log(`Buy price w/ fee: ${buyPriceWithFee.toFixed(4)} DAI, Sell price w/ fee: ${sellPriceWithFee.toFixed(4)} DAI`);
+          console.log(`Price difference (after fees): ${priceDiffPerEth.toFixed(4)} DAI`);
           console.log(`Trade amount: ${ethAmount.toFixed(6)} ETH`);
           console.log(`Estimated gas cost: ${gasTotal.toFixed(4)} DAI`);
           console.log(`Potential profit before gas: ${grossProfitForTrade.toFixed(4)} DAI`);
           console.log(`Potential profit after gas: ${netProfitAfterGas.toFixed(4)} DAI`);
-
-          // Only execute trade if profitable
           if (netProfitAfterGas <= 0) {
-            console.log(chalk.yellow(`Skipping trade - Not profitable after gas costs\n`));
-            continue;
+            console.log(chalk.yellow('Best trade is not profitable after gas/fees. Skipping.'));
+          } else if (daiNeeded > currentBalance) {
+            console.log(chalk.yellow(`Best trade requires more DAI (${daiNeeded.toFixed(2)}) than available balance (${currentBalance.toFixed(2)}). Skipping.`));
+          } else {
+            console.log(chalk.green('Executing best trade!'));
+            tradeCount += 1;
+            grossProfit += grossProfitForTrade;
+            totalGas += gasTotal;
+            netProfit += netProfitAfterGas;
+            currentBalance += netProfitAfterGas;
+            if (logFilePath) {
+              const line = `${new Date().toISOString()},${bestTrade.buy},${buySrc.price!},${bestTrade.sell},${sellSrc.price!},${bestTrade.profit.toFixed(2)},${gasTotal.toFixed(2)},${netProfitAfterGas.toFixed(4)},${currentBalance.toFixed(2)},${ethAmount.toFixed(6)},${buyFee},${sellFee}\n`;
+              fs.appendFileSync(logFilePath, line);
+            }
+            console.log(chalk.green(`Executed trade: ${ethAmount.toFixed(6)} ETH`));
+            console.log(`  Buy from ${bestTrade.buy} at ${(buySrc.price!).toFixed(2)} DAI`);
+            console.log(`  Sell to ${bestTrade.sell} at ${(sellSrc.price!).toFixed(2)} DAI`);
+            console.log(`  Profit: ${netProfitAfterGas.toFixed(4)} DAI`);
+            console.log(`  New balance: ${currentBalance.toFixed(2)} DAI`);
           }
-
-          // Check if we have enough balance
-          if (daiNeeded > currentBalance) {
-            console.log(chalk.yellow(`Skipping trade - Insufficient balance (${currentBalance.toFixed(2)} DAI) for trade requiring ${daiNeeded.toFixed(2)} DAI\n`));
-            continue;
-          }
-
-          console.log(chalk.green(`Executing trade!\n`));
-
-          tradeCount += 1;
-          grossProfit += grossProfitForTrade;
-          totalGas += gasTotal;
-          netProfit += netProfitAfterGas;
-          currentBalance += netProfitAfterGas;
-
-          if (logFilePath) {
-            const line = `${new Date().toISOString()},${opp.buy},${buySrc.price},${opp.sell},${sellSrc.price},${opp.profit.toFixed(2)},${gasTotal.toFixed(2)},${netProfitAfterGas.toFixed(4)},${currentBalance.toFixed(2)},${ethAmount.toFixed(6)}\n`;
-            fs.appendFileSync(logFilePath, line);
-          }
-
-          console.log(chalk.green(`Executed trade: ${ethAmount.toFixed(6)} ETH`));
-          console.log(`  Buy from ${opp.buy} at ${buySrc.price.toFixed(2)} DAI`);
-          console.log(`  Sell to ${opp.sell} at ${sellSrc.price.toFixed(2)} DAI`);
-          console.log(`  Profit: ${netProfitAfterGas.toFixed(4)} DAI`);
-          console.log(`  New balance: ${currentBalance.toFixed(2)} DAI`);
+        } else {
+          console.log(chalk.yellow('No valid arbitrage opportunities found this interval.'));
         }
 
         // Check duration
